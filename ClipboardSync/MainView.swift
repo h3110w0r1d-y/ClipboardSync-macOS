@@ -9,11 +9,11 @@ struct MainView: View {
         VStack(spacing: 0) {
             // 标题和连接状态
             HStack() {
-                Image(systemName: viewModel.isConnected ?
+                Image(systemName: viewModel.connectionStatus != .Disconnect ?
                     "arrow.triangle.2.circlepath.circle.fill" :
                     "arrow.triangle.2.circlepath.circle")
                     .font(.system(size: 24))
-                    .foregroundColor(viewModel.isConnected ? .green : .red)
+                    .foregroundColor(getStatusColor(viewModel.connectionStatus))
                 
                 Text("剪贴板同步")
                     .font(.title)
@@ -21,7 +21,7 @@ struct MainView: View {
                 
                 Spacer()
                 
-                StatusBadge(isConnected: viewModel.isConnected)
+                StatusBadge(connectionStatus: viewModel.connectionStatus)
             }
             .padding(.vertical)
             
@@ -48,7 +48,7 @@ struct MainView: View {
                 
                 HStack {
                     Text("MQTT端口:")
-                    TextField("1883", value: $viewModel.mqttPort, formatter: NumberFormatter())
+                    TextField("8883", value: $viewModel.mqttPort, formatter: NumberFormatter())
                         .textFieldStyle(RoundedBorderTextFieldStyle())
                         .frame(width: 70)
                     Toggle("启用SSL", isOn: $viewModel.mqttEnableSSL)
@@ -64,13 +64,16 @@ struct MainView: View {
                     TextField("可选", text: $viewModel.mqttUsername)
                         .textFieldStyle(RoundedBorderTextFieldStyle())
                 }
-                
                 HStack {
                     Text("密码:")
                     SecureField("可选", text: $viewModel.mqttPassword)
                         .textFieldStyle(RoundedBorderTextFieldStyle())
                 }
-                
+                HStack {
+                    Text("加密密钥:")
+                    SecureField("推荐", text: $viewModel.secretKey)
+                        .textFieldStyle(RoundedBorderTextFieldStyle())
+                }
                 HStack {
                     Text("保活间隔:")
                     TextField("60", value: $viewModel.keepAlive, formatter: NumberFormatter())
@@ -155,7 +158,7 @@ struct MainView: View {
                 Button(action: {
                     viewModel.toggleConnection()
                 }) {
-                    if viewModel.isConnected {
+                    if viewModel.connectionStatus == .Connected {
                         Label("断开连接", systemImage: "minus.circle")
                             .foregroundColor(.red)
                     } else {
@@ -174,16 +177,44 @@ struct MainView: View {
 
 // 状态标签组件
 struct StatusBadge: View {
-    let isConnected: Bool
+    let connectionStatus: ConnectionStatus
     
     var body: some View {
-        Text(isConnected ? "已连接" : "未连接")
+        Text(getStatusText(connectionStatus))
             .font(.caption)
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
-            .background(isConnected ? Color.green.opacity(0.2) : Color.red.opacity(0.2))
-            .foregroundColor(isConnected ? .green : .red)
+            .background(getStatusColor(connectionStatus).opacity(0.2))
+            .foregroundColor(getStatusColor(connectionStatus))
             .cornerRadius(20)
+    }
+}
+
+
+func getStatusColor(_ status: ConnectionStatus) -> Color {
+    switch status {
+    case .Connected:
+        return .green
+    case .Connecting:
+        return .yellow
+    case .Disconnect:
+        return .gray
+    case .ConnectionFailure:
+        return .red
+    }
+}
+
+
+func getStatusText(_ status: ConnectionStatus) -> String {
+    switch status {
+    case .Connected:
+        return "已连接"
+    case .Connecting:
+        return "连接中"
+    case .Disconnect:
+        return "未连接"
+    case .ConnectionFailure:
+        return "连接失败"
     }
 }
 

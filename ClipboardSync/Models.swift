@@ -33,10 +33,11 @@ struct SyncRecord: Identifiable {
 final class AppSettings {
     var mqttHost: String
     var mqttPort: UInt16
+    var mqttEnableSSL: Bool
     var mqttTopic: String
     var mqttUsername: String
     var mqttPassword: String
-    var mqttEnableSSL: Bool
+    var secretKey: String
     var keepAlive: UInt16
     var autoConnectOnStartup: Bool
     
@@ -47,6 +48,7 @@ final class AppSettings {
         mqttTopic: String = "clipboard",
         mqttUsername: String = "",
         mqttPassword: String = "",
+        secretKey: String = "",
         keepAlive: UInt16 = 60,
         autoConnectOnStartup: Bool = false
     ) {
@@ -56,6 +58,7 @@ final class AppSettings {
         self.mqttTopic = mqttTopic
         self.mqttUsername = mqttUsername
         self.mqttPassword = mqttPassword
+        self.secretKey = secretKey
         self.keepAlive = keepAlive
         self.autoConnectOnStartup = autoConnectOnStartup
     }

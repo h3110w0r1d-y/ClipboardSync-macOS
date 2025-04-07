@@ -6,7 +6,7 @@ class MainViewModel: ObservableObject {
     private let modelContainer: ModelContainer
     private let clipboardSync: ClipboardSync
 
-    @Published var isConnected = false
+    @Published var connectionStatus: ConnectionStatus = .Disconnect
     @Published var deviceName = Host.current().localizedName ?? "Unknown-Mac"
     @Published var deviceID = ""
     @Published var syncHistory: [SyncRecord] = []
@@ -17,6 +17,7 @@ class MainViewModel: ObservableObject {
     @Published var mqttTopic = "clipboard"
     @Published var mqttUsername = ""
     @Published var mqttPassword = ""
+    @Published var secretKey = ""
     @Published var keepAlive: UInt16 = 60
     @Published var autoConnectOnStartup = false
 
@@ -46,6 +47,7 @@ class MainViewModel: ObservableObject {
             self.mqttTopic = settings.mqttTopic
             self.mqttUsername = settings.mqttUsername
             self.mqttPassword = settings.mqttPassword
+            self.secretKey = settings.secretKey
             self.keepAlive = settings.keepAlive
             self.autoConnectOnStartup = settings.autoConnectOnStartup
             if (self.autoConnectOnStartup) {
@@ -70,6 +72,7 @@ class MainViewModel: ObservableObject {
                 firstSetting.mqttTopic = mqttTopic
                 firstSetting.mqttUsername = mqttUsername
                 firstSetting.mqttPassword = mqttPassword
+                firstSetting.secretKey = secretKey
                 firstSetting.keepAlive = keepAlive
                 firstSetting.autoConnectOnStartup = autoConnectOnStartup
             } else {
@@ -80,6 +83,7 @@ class MainViewModel: ObservableObject {
                     mqttTopic: mqttTopic,
                     mqttUsername: mqttUsername,
                     mqttPassword: mqttPassword,
+                    secretKey: secretKey,
                     keepAlive: keepAlive,
                     autoConnectOnStartup: autoConnectOnStartup
                 ))
@@ -100,6 +104,7 @@ class MainViewModel: ObservableObject {
         let topic: String
         let username: String
         let password: String
+        let secretKey: String
         let keepAlive: UInt16
     }
 
@@ -121,7 +126,7 @@ class MainViewModel: ObservableObject {
     @MainActor
     func toggleConnection() {
         print("ViewModel: Toggle connection")
-        if isConnected {
+        if connectionStatus == .Connected {
             disconnect()
         } else {
             saveSettings()
@@ -140,6 +145,7 @@ class MainViewModel: ObservableObject {
             topic: mqttTopic,
             username: mqttUsername,
             password: mqttPassword,
+            secretKey: secretKey,
             keepAlive: keepAlive
         )
 

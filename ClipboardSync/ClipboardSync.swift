@@ -2,6 +2,9 @@ import Cocoa
 import CocoaMQTT
 import Foundation
 import IOKit
+import CryptoKit
+import CommonCrypto
+
 
 class ClipboardSync: NSObject {
     // MQTT客户端实例
@@ -15,16 +18,18 @@ class ClipboardSync: NSObject {
     // 定时器，用于定期检查剪贴板内容
     private var syncTimer: Timer!
     // 连接状态，指示是否已连接到MQTT服务器
-    private var isConnected: Bool = false
+    private var connectionStatus: ConnectionStatus = .Disconnect
 
     // MQTT 配置
     // MQTT 主题，用于消息的发布和订阅
     private var mqttTopic = "clipboard"
+    private var secretKey = Data(count: 32)
+    private var secretIV = Data(count: 16)
     private var needReconnect = false
 
     // 回调
     // 连接状态改变时的回调
-    var onConnectionStatusChanged: ((Bool) -> Void)?
+    var onConnectionStatusChanged: ((ConnectionStatus) -> Void)?
     // 同步事件发生时的回调
     var onSyncEvent: ((SyncRecord) -> Void)?
 
@@ -34,6 +39,7 @@ class ClipboardSync: NSObject {
         deviceName = Host.current().localizedName ?? "Unknown-Mac"
         deviceID = getHardwareUUID()
         mqttClient = CocoaMQTT5(clientID: deviceID)
+        mqttClient.delegate = self
     }
 
     func getHardwareUUID() -> String {
@@ -58,7 +64,7 @@ class ClipboardSync: NSObject {
         // 将当前状态同步到 ViewModel
         viewModel.deviceName = deviceName
         viewModel.deviceID = deviceID
-        viewModel.isConnected = isConnected
+        viewModel.connectionStatus = connectionStatus
 
         // 设置 ViewModel 的回调函数
         viewModel.connectAction = { [weak self] in
@@ -80,15 +86,16 @@ class ClipboardSync: NSObject {
                 mqttTopic: settings.topic,
                 mqttUsername: settings.username,
                 mqttPassword: settings.password,
+                secretKey: settings.secretKey,
                 keepAlive: settings.keepAlive
             )
         }
 
         // 设置回调给 ClipboardSync
-        onConnectionStatusChanged = { [weak viewModel] isConnected in
+        onConnectionStatusChanged = { [weak viewModel] status in
             DispatchQueue.main.async {
-                print("Connection status changed: \(isConnected)")
-                viewModel?.isConnected = isConnected
+                print("Connection status changed: \(status)")
+                viewModel?.connectionStatus = status
             }
         }
 
@@ -106,43 +113,57 @@ class ClipboardSync: NSObject {
     /// 连接到MQTT服务器
     func connect() {
         // 启动监控剪贴板
+        connectionStatus = .Connecting
+        onConnectionStatusChanged?(.Connecting)
         _ = mqttClient.connect()
         startMonitoringClipboard()
     }
 
     /// 断开与MQTT服务器的连接
-    func disconnect() {
+    func disconnect(reconnect: Bool = false) {
+        needReconnect = false
         stopMonitoringClipboard()
         mqttClient.disconnect()
     }
 
     /// 更新MQTT设置
     func updateSettings(mqttHost: String, mqttPort: UInt16, mqttEnableSSL: Bool, mqttTopic: String,
-                        mqttUsername: String, mqttPassword: String, keepAlive: UInt16) {
-        needReconnect = (
+                        mqttUsername: String, mqttPassword: String, secretKey: String, keepAlive: UInt16) {
+        let newSecretKey = Data(SHA256.hash(data: secretKey.data(using: .utf8)!))
+        
+        // 如果关键连接参数改变且当前已连接，则重新连接
+        if (
             mqttClient.host != mqttHost ||
             mqttClient.port != mqttPort ||
             mqttClient.enableSSL != mqttEnableSSL ||
             self.mqttTopic != mqttTopic ||
             mqttClient.username != mqttUsername ||
             mqttClient.password != mqttPassword ||
-            mqttClient.password != mqttPassword ||
+            self.secretKey != newSecretKey ||
             mqttClient.keepAlive != keepAlive
-        ) && isConnected
-        
-        // 如果关键连接参数改变且当前已连接，则重新连接
-        if needReconnect {
-            disconnect()
+        ) {
+            mqttClient.host = mqttHost
+            mqttClient.port = mqttPort
+            mqttClient.enableSSL = mqttEnableSSL
+            self.mqttTopic = mqttTopic
+            mqttClient.username = mqttUsername
+            mqttClient.password = mqttPassword
+            self.secretKey = newSecretKey
+            self.secretIV = newSecretKey.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) -> Data in
+                var result = Data(count: 16)
+                result.withUnsafeMutableBytes { (resultBuffer: UnsafeMutableRawBufferPointer) in
+                    for i in 0..<16 {
+                        resultBuffer[i] = buffer[i] ^ buffer[i + 16]
+                    }
+                }
+                return result
+            }
+            mqttClient.keepAlive = keepAlive
+            if connectionStatus == .Connected {
+                disconnect(reconnect: true)
+            }
         }
         
-        // 重新创建MQTT客户端
-        mqttClient.host = mqttHost
-        mqttClient.port = mqttPort
-        mqttClient.enableSSL = mqttEnableSSL
-        mqttClient.username = mqttUsername
-        mqttClient.password = mqttPassword
-        mqttClient.keepAlive = keepAlive
-        mqttClient.delegate = self
     }
 
     /// 开始监控剪贴板内容的变化
@@ -164,7 +185,7 @@ class ClipboardSync: NSObject {
 
     /// 检查剪贴板内容是否有变化
     @objc private func checkClipboard() {
-        guard isConnected else { return }
+        guard connectionStatus == .Connected else { return }
         let pasteboard = NSPasteboard.general
         if pasteboard.changeCount != changeCount {
             changeCount = pasteboard.changeCount
@@ -181,35 +202,33 @@ class ClipboardSync: NSObject {
             let clipboardData = ClipboardData(deviceID: deviceID, content: content, timestamp: Int64(Date().timeIntervalSince1970 * 1000))
             let jsonData = try JSONEncoder().encode(clipboardData)
             let properties = MqttPublishProperties()
-            if let jsonString = String(data: jsonData, encoding: .utf8) {
-                mqttClient.publish(mqttTopic, withString: jsonString, qos: .qos1, properties: properties)
-                            
-                // 记录发送事件
-                let record = SyncRecord(content: content, timestamp: Date(), direction: .outgoing)
-                onSyncEvent?(record)
-            }
+
+            let aes256 = try AES256(key: secretKey, iv: secretIV)
+            let result = try aes256.encrypt(jsonData)
+            let message = CocoaMQTT5Message(topic: mqttTopic, payload: Array(result))
+
+            mqttClient.publish(message, properties: properties)
+            // 记录发送事件
+            let record = SyncRecord(content: content, timestamp: Date(), direction: .outgoing)
+            onSyncEvent?(record)
         } catch {
             print("Error encoding clipboard data: \(error)")
         }
     }
 }
 
-// MARK: - CocoaMQTTDelegate
 
+// MARK: - CocoaMQTTDelegate
 extension ClipboardSync: CocoaMQTT5Delegate {
     /// 处理MQTT连接确认消息
     func mqtt5(_ mqtt5: CocoaMQTT5, didConnectAck ack: CocoaMQTTCONNACKReasonCode, connAckData: MqttDecodeConnAck?) {
         if ack == .success {
-            isConnected = true
+            connectionStatus = .Connected
+            needReconnect = true
             let subscription = MqttSubscription(topic: mqttTopic, qos: .qos1)
             subscription.noLocal = true
             mqttClient.subscribe([subscription])
-            onConnectionStatusChanged?(true)
-
-            let notification = NSUserNotification()
-            notification.title = "剪贴板同步"
-            notification.informativeText = "已连接到MQTT服务器"
-            NSUserNotificationCenter.default.deliver(notification)
+            onConnectionStatusChanged?(.Connected)
 
             // 更新菜单栏图标
             if let appDelegate = NSApp.delegate as? AppDelegate {
@@ -228,29 +247,30 @@ extension ClipboardSync: CocoaMQTT5Delegate {
     func mqtt5(_ mqtt5: CocoaMQTT5, didReceiveMessage message: CocoaMQTT5Message, id: UInt16, publishData: MqttDecodePublish?) {
         print("收到MQTT消息: \(message.topic)")
 
-        if let messageString = message.string {
-            do {
-                let clipboardData = try JSONDecoder().decode(ClipboardData.self, from: messageString.data(using: .utf8)!)
+        do {
+            let cipher = try AES256(key: secretKey, iv: secretIV)
+            let decryptedData = try cipher.decrypt(Data(message.payload))
+            
+            let clipboardData = try JSONDecoder().decode(ClipboardData.self, from: decryptedData)
 
-                // 忽略自己发送的消息
-                if clipboardData.deviceID == deviceID {
-                    return
-                }
-                // 更新剪贴板内容
-                let pasteboard = NSPasteboard.general
-                pasteboard.clearContents()
-                pasteboard.setString(clipboardData.content, forType: .string)
-
-                // 更新我们的changeCount以避免重新发送
-                changeCount = pasteboard.changeCount
-
-                // 记录接收事件
-                let record = SyncRecord(content: clipboardData.content, timestamp: Date(), direction: .incoming)
-                onSyncEvent?(record)
-
-            } catch {
-                print("Error decoding clipboard data: \(error)")
+            // 忽略自己发送的消息
+            if clipboardData.deviceID == deviceID {
+                return
             }
+            // 更新剪贴板内容
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(clipboardData.content, forType: .string)
+
+            // 更新我们的changeCount以避免重新发送
+            changeCount = pasteboard.changeCount
+
+            // 记录接收事件
+            let record = SyncRecord(content: clipboardData.content, timestamp: Date(), direction: .incoming)
+            onSyncEvent?(record)
+
+        } catch {
+            print("Error decoding clipboard data: \(error)")
         }
     }
 
@@ -272,22 +292,28 @@ extension ClipboardSync: CocoaMQTT5Delegate {
 
     /// 处理MQTT断开连接事件
     func mqtt5DidDisconnect(_ mqtt5: CocoaMQTT5, withError err: Error?) {
-        isConnected = false
-        onConnectionStatusChanged?(false)
-
-        let notification = NSUserNotification()
-        notification.title = "剪贴板同步"
-        notification.informativeText = "已断开连接"
-        NSUserNotificationCenter.default.deliver(notification)
-
+        if connectionStatus == .Connecting {
+            connectionStatus = .ConnectionFailure
+            onConnectionStatusChanged?(.ConnectionFailure)
+        } else {
+            connectionStatus = .Disconnect
+            onConnectionStatusChanged?(.Disconnect)
+        }
         // 更新菜单栏图标
         if let appDelegate = NSApp.delegate as? AppDelegate {
             appDelegate.updateStatusBarIcon(isConnected: false)
         }
         
         if needReconnect {
-            needReconnect = false
+            Thread.sleep(forTimeInterval: 1)
             connect()
         }
     }
+}
+
+enum ConnectionStatus {
+    case Connected
+    case Disconnect
+    case ConnectionFailure
+    case Connecting
 }

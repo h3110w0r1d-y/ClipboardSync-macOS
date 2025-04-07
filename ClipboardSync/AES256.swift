@@ -1,5 +1,5 @@
-
 import Foundation
+import CommonCrypto
 
 struct AES256 {
     
@@ -36,66 +36,28 @@ struct AES256 {
         var outLength = Int(0)
         var outBytes = [UInt8](repeating: 0, count: input.count + kCCBlockSizeAES128)
         var status: CCCryptorStatus = CCCryptorStatus(kCCSuccess)
-        input.withUnsafeBytes { (encryptedBytes: UnsafePointer<UInt8>!) -> () in
-            iv.withUnsafeBytes { (ivBytes: UnsafePointer<UInt8>!) in
-                key.withUnsafeBytes { (keyBytes: UnsafePointer<UInt8>!) -> () in
-                    status = CCCrypt(operation,                     
-                                     CCAlgorithm(kCCAlgorithmAES128),            // algorithm
-                                     CCOptions(kCCOptionPKCS7Padding),           // options
-                                     keyBytes,                                   // key
-                                     key.count,                                  // keylength
-                                     ivBytes,                                    // iv
-                                     encryptedBytes,                             // dataIn
-                                     input.count,                                // dataInLength
-                                     &outBytes,                                  // dataOut
-                                     outBytes.count,                             // dataOutAvailable
-                                     &outLength)                                 // dataOutMoved
+        input.withUnsafeBytes { inputBytes in
+            iv.withUnsafeBytes { ivBytes in
+                key.withUnsafeBytes { keyBytes in
+                    status = CCCrypt(
+                        operation,
+                        CCAlgorithm(kCCAlgorithmAES128),
+                        CCOptions(kCCOptionPKCS7Padding),
+                        keyBytes.baseAddress,
+                        key.count,
+                        ivBytes.baseAddress,
+                        inputBytes.baseAddress,
+                        input.count,
+                        &outBytes,
+                        outBytes.count,
+                        &outLength
+                    )
                 }
             }
         }
         guard status == kCCSuccess else {
             throw Error.cryptoFailed(status: status)
         }
-        return Data(bytes: UnsafePointer<UInt8>(outBytes), count: outLength)
-    }
-    
-    static func createKey(password: Data, salt: Data) throws -> Data {
-        let length = kCCKeySizeAES256
-        var status = Int32(0)
-        var derivedBytes = [UInt8](repeating: 0, count: length)
-        password.withUnsafeBytes { (passwordBytes: UnsafePointer<Int8>!) in
-            salt.withUnsafeBytes { (saltBytes: UnsafePointer<UInt8>!) in
-                status = CCKeyDerivationPBKDF(CCPBKDFAlgorithm(kCCPBKDF2),                  // algorithm
-                                              passwordBytes,                                // password
-                                              password.count,                               // passwordLen
-                                              saltBytes,                                    // salt
-                                              salt.count,                                   // saltLen
-                                              CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA1),   // prf
-                                              10000,                                        // rounds
-                                              &derivedBytes,                                // derivedKey
-                                              length)                                       // derivedKeyLen
-            }
-        }
-        guard status == 0 else {
-            throw Error.keyGeneration(status: Int(status))
-        }
-        return Data(bytes: UnsafePointer<UInt8>(derivedBytes), count: length)
-    }
-    
-    static func randomIv() -> Data {
-        return randomData(length: kCCBlockSizeAES128)
-    }
-    
-    static func randomSalt() -> Data {
-        return randomData(length: 8)
-    }
-    
-    static func randomData(length: Int) -> Data {
-        var data = Data(count: length)
-        let status = data.withUnsafeMutableBytes { mutableBytes in
-            SecRandomCopyBytes(kSecRandomDefault, length, mutableBytes)
-        }
-        assert(status == Int32(0))
-        return data
+        return Data(bytes: outBytes, count: outLength)
     }
 }
