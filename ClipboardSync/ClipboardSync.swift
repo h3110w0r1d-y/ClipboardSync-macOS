@@ -234,6 +234,9 @@ extension ClipboardSync: CocoaMQTT5Delegate {
             if let appDelegate = NSApp.delegate as? AppDelegate {
                 appDelegate.updateStatusBarIcon(isConnected: true)
             }
+        } else {
+            connectionStatus = .ConnectionFailure
+            onConnectionStatusChanged?(.ConnectionFailure)
         }
     }
 
